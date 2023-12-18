@@ -96,6 +96,9 @@ fn process_element<'a>(
       Some(base)
     }
     Rule::paragraph => Some(process_paragraph(element)),
+    Rule::table_cell => {
+      Some(process_table_cell(&element, base, env, &DEFAULT_CELL_FORMAT))
+    }
     Rule::list => {
       for subelement in element.into_inner() {
         if let Some(e) = process_element(subelement, env) {
@@ -172,8 +175,8 @@ fn process_element<'a>(
       Some(base)
     }
     Rule::image_block => Some(process_image(element, base, env)),
-    Rule::table_row => Some(process_table_row(element, base, env)),
-    Rule::table_cell => Some(process_table_cell(element, base, env)),
+    Rule::table_row => Some(process_table_row(element, base, env, &[DEFAULT_CELL_FORMAT])),
+    Rule::table_cell => Some(process_table_cell(&element, base, env, &DEFAULT_CELL_FORMAT)),
     Rule::block => {
       for subelement in element.into_inner() {
         if let Some(e) = process_element(subelement, env) {
@@ -645,11 +648,13 @@ fn process_inner_table<'a>(
   mut base: ElementSpan<'a>,
   env: &mut Env,
 ) -> ElementSpan<'a> {
+  let row_format = base.get_attribute("cols").unwrap_or("");
+  let cell_formats = parse_row_format(row_format);
+
   for element in element.into_inner() {
     match element.as_rule() {
       Rule::delimited_inner => {
         let ast = AsciidocParser::parse(Rule::table_inner, element.as_str()).unwrap();
-
         for element in ast {
           for subelement in element.into_inner() {
             if let Some(e) = process_element(subelement, env) {
@@ -662,37 +667,78 @@ fn process_inner_table<'a>(
           value: AttributeValue::Ref(element.as_str()),
         });
       }
+      Rule::table_row => {
+        let row = process_table_row(element, base.clone(), env, &cell_formats);
+        base.children.push(row);
+      }
       _ => (),
     };
   }
   base
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CellKind {
+  Default,
+  Asciidoc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CellFormat {
+    length: usize,
+    kind: CellKind,
+}
+
+fn parse_row_format(input: &str) -> Vec<CellFormat> {
+  input.split(',')
+       .map(|fmt| {
+           let parts: Vec<&str> = fmt.split('=').collect();
+           let kind = match parts.get(0).unwrap_or(&"default") {
+            &"a" => CellKind::Asciidoc,
+            _ => CellKind::Default,
+           };
+           let length = parts.get(1).unwrap_or(&"1").parse::<usize>().unwrap_or(1);
+           CellFormat { length, kind }
+       })
+       .collect()
+}
+
+fn process_inner_table(input: &str, cell_format: Vec<CellFormat>) ->  {
+  
+}
+
 fn process_table_row<'a>(
   element: Pair<'a, asciidoc::Rule>,
   mut base: ElementSpan<'a>,
   env: &mut Env,
+  cell_formats: &[CellFormat],
 ) -> ElementSpan<'a> {
   base.element = Element::TableRow;
-  for cell_element in element.into_inner() {
-    let cell = process_table_cell(cell_element, base.clone(), env);
+
+  for (cell_element, cell_format) in element.into_inner().zip(cell_formats.iter().cycle()) {
+    let cell = process_table_cell(&cell_element, base.clone(), env, cell_format);
     base.children.push(cell);
   }
+
   base
 }
 
+static DEFAULT_CELL_FORMAT : CellFormat = CellFormat { length: 1, kind: CellKind::Default };
+
 fn process_table_cell<'a>(
-  element: Pair<'a, asciidoc::Rule>,
+  element: &Pair<'a, asciidoc::Rule>,
   mut base: ElementSpan<'a>,
   _env: &mut Env,
+  cell_format: &CellFormat,
 ) -> ElementSpan<'a> {
   base.element = Element::TableCell;
-  base.content = element
+
+  base.content = element.clone()
     .into_inner()
     .find(|sub| sub.as_rule() == Rule::table_cell_content)
-    .unwrap()
-    .as_str()
+    .map_or("", |pair| pair.as_str())
     .trim();
+
   base
 }
 
@@ -741,4 +787,25 @@ fn from_element<'a>(rule: &Pair<'a, asciidoc::Rule>, element: Element<'a>) -> El
     end_line,
     end_col,
   }
+}
+
+#[cfg(test)]
+mod test {
+  use pretty_assertions::assert_eq;
+
+  use super::*;
+
+  #[test]
+  fn test_table() {
+    let out = parse_row_format(r#"1,a"#);
+    assert_eq!(out, vec![CellFormat{length:1,kind:CellKind::Default}, CellFormat{length:1,kind:CellKind::Asciidoc}]);
+  }
+
+  #[test]
+  fn test_inner_table() {
+    let out = parse_row_format(r#"1,a"#);
+    assert_eq!(out, vec![CellFormat{length:1,kind:CellKind::Default}, CellFormat{length:1,kind:CellKind::Asciidoc}]);
+  }
+  
+
 }
